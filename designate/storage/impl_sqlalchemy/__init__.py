@@ -17,7 +17,7 @@ import time
 import hashlib
 
 from oslo_log import log as logging
-from sqlalchemy import select, distinct, func
+from sqlalchemy import select, distinct, func, outerjoin
 from sqlalchemy.sql.expression import or_
 
 from designate import exceptions
@@ -219,10 +219,18 @@ class SQLAlchemyStorage(sqlalchemy_base.SQLAlchemy, storage_base.Storage):
         # Check to see if the criterion can use the reverse_name column
         criterion = self._rname_check(criterion)
 
+        query = select([tables.zones, tables.shared_zones.c.target_tenant_id]).select_from(
+            outerjoin(
+                tables.zones, tables.shared_zones,
+                (tables.zones.c.id == tables.shared_zones.c.zone_id)
+                & (tables.shared_zones.c.target_tenant_id == context.project_id)
+            )
+        )
+
         zones = self._find(
             context, tables.zones, objects.Zone, objects.ZoneList,
             exceptions.ZoneNotFound, criterion, one, marker, limit,
-            sort_key, sort_dir)
+            sort_key, sort_dir, query=query)
 
         def _load_relations(zone):
             if zone.type == 'SECONDARY':
@@ -236,7 +244,9 @@ class SQLAlchemyStorage(sqlalchemy_base.SQLAlchemy, storage_base.Storage):
             zone.attributes = self._find_zone_attributes(
                 context, {'zone_id': zone.id, "key": "!master"})
 
-            zone.obj_reset_changes(['masters', 'attributes'])
+            zone.shared = context.project_id != zone.tenant_id
+
+            zone.obj_reset_changes(['masters', 'attributes', 'shared'])
 
         # TODO(Federico) refactor part of _find_zones into _find_zone, move
         # _load_relations out
@@ -490,7 +500,15 @@ class SQLAlchemyStorage(sqlalchemy_base.SQLAlchemy, storage_base.Storage):
         return len(zones)
 
     def count_zones(self, context, criterion=None):
-        query = select([func.count(tables.zones.c.id)])
+        query = select([func.count(tables.zones.c.id),
+                        tables.shared_zones.c.target_tenant_id]).select_from(
+            outerjoin(
+                tables.zones, tables.shared_zones,
+                (tables.zones.c.id == tables.shared_zones.c.zone_id)
+                & (tables.shared_zones.c.target_tenant_id == context.project_id)
+            )
+        )
+
         query = self._apply_criterion(tables.zones, query, criterion)
         query = self._apply_tenant_criteria(context, tables.zones, query)
         query = self._apply_deleted_criteria(context, tables.zones, query)
@@ -502,6 +520,37 @@ class SQLAlchemyStorage(sqlalchemy_base.SQLAlchemy, storage_base.Storage):
             return 0
 
         return result[0]
+
+    # Shared zones methods
+    def _find_shared_zones(self, context, criterion, one=False, marker=None,
+                           limit=None, sort_key=None, sort_dir=None):
+        return self._find(
+            context, tables.shared_zones, objects.SharedZone,
+            objects.SharedZoneList, exceptions.SharedZoneNotFound, criterion,
+            one, marker, limit, sort_key, sort_dir)
+
+    def share_zone(self, context, shared_zone):
+        return self._create(tables.shared_zones, shared_zone,
+                            exceptions.DuplicateSharedZone)
+
+    def unshare_zone(self, context, shared_zone_id):
+        shared_zone = self._find_shared_zones(
+            context, {'id': shared_zone_id}, one=True
+        )
+        return self._delete(context, tables.shared_zones, shared_zone,
+                            exceptions.SharedZoneNotFound)
+
+    def find_shared_zones(self, context, criterion=None, marker=None,
+                          limit=None, sort_key=None, sort_dir=None):
+        return self._find_shared_zones(
+            context, criterion, marker=marker,
+            limit=limit, sort_key=sort_key, sort_dir=sort_dir
+        )
+
+    def get_shared_zone(self, context, shared_zone_id):
+        return self._find_shared_zones(
+            context, {'id': shared_zone_id}, one=True
+        )
 
     # Zone attribute methods
     def _find_zone_attributes(self, context, criterion, one=False,
@@ -658,7 +707,11 @@ class SQLAlchemyStorage(sqlalchemy_base.SQLAlchemy, storage_base.Storage):
         # Fetch the zone as we need the tenant_id
         zone = self._find_zones(context, {'id': zone_id}, one=True)
 
-        recordset.tenant_id = zone.tenant_id
+        if zone.shared:
+            recordset.tenant_id = context.project_id
+        else:
+            recordset.tenant_id = zone.tenant_id
+
         recordset.zone_id = zone_id
 
         # Patch in the reverse_name column

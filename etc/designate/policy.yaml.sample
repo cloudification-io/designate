@@ -165,6 +165,22 @@
 #
 #"update_service_status": "rule:admin"
 
+# Get Shared Zone
+# GET  /v2/zones/share/{shared_zone_id}
+#"get_shared_zone": "rule:admin_or_owner"
+
+# Share Zone
+# POST  /v2/zones/share
+#"share_zone": "rule:admin_or_owner"
+
+# List Shared Zones
+# GET  /v2/zones/share
+#"find_shared_zones": "rule:admin_or_owner"
+
+# Unshare Zone
+# DELETE  /v2/zones/share/{shared_zone_id}
+#"unshare_zone": "rule:admin_or_owner"
+
 # Find all Tenants.
 #"find_tenants": "rule:admin"
 

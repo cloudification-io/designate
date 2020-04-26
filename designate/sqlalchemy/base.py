@@ -22,7 +22,8 @@ from oslo_db.sqlalchemy import utils as oslodb_utils
 from oslo_db import exception as oslo_db_exception
 from oslo_log import log as logging
 from oslo_utils import timeutils
-from sqlalchemy import select, or_, between, func, distinct
+from sqlalchemy import select, between, func, distinct, literal_column
+from sqlalchemy.sql import Select as SelectQueryCls
 
 from designate import exceptions
 from designate import objects
@@ -149,19 +150,27 @@ class SQLAlchemy(object):
         return query
 
     def _apply_tenant_criteria(self, context, table, query,
-                               include_null_tenant=True):
+                               include_null_tenant=True,
+                               include_shared=True):
         if hasattr(table.c, 'tenant_id'):
             if not context.all_tenants:
+                tenant_condition = table.c.tenant_id == context.project_id
+
                 # NOTE: The query doesn't work with table.c.tenant_id is None,
                 # so I had to force flake8 to skip the check
                 if include_null_tenant:
-                    query = query.where(or_(
-                            table.c.tenant_id == context.project_id,
-                            table.c.tenant_id == None))  # NOQA
-                else:
-                    query = query.where(
-                        table.c.tenant_id == context.project_id
+                    tenant_condition |= table.c.tenant_id == None # NOQA
+
+                if (isinstance(query, SelectQueryCls)
+                        and 'target_tenant_id' in query.columns
+                        and table.name == 'zones'
+                        and include_shared):
+                    tenant_condition |= (
+                        literal_column('target_tenant_id')
+                        == context.project_id
                     )
+
+                query = query.where(tenant_condition)
 
         return query
 
